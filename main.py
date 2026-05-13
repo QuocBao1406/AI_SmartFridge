@@ -9,8 +9,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 SPICES = [
     "nước mắm", "dầu ăn", "muối", "đường", "tiêu", "bột ngọt", "mì chính",
-    "hạt nêm", "tỏi", "hành khô", "hành tím", "hành lá", "hành tây", "gừng", 
-    "nước tương", "xì dầu", "giấm", "ớt", "chanh", "ngò", "rau mùi", "hành"
+    "hạt nêm", "tỏi", "hành khô", "gừng", "nước tương", "xì dầu", "giấm", "ớt", "chanh"
 ]
 
 def clean_for_ai(ingredients_data):
@@ -73,17 +72,10 @@ def suggest_recipe(request: RecipeRequest):
     best_match_idx = similarity_scores[0].argmax()
     best_score = similarity_scores[0][best_match_idx]
 
-    input_foods = clean_input.split()
-
-    recipe_ingredients = clean_for_ai(suggest_dish['ingredients'])
-
-    has_main_ingredient = any(food in recipe_ingredients for food in input_foods if len(food) > 1)
-
-    
-    if not has_main_ingredient:
+    if best_score < 0.3:
         return {
             "success": False,
-            "message": "Tủ lạnh hiện tại không có đủ nguyên liệu chính cho các món trong thực đơn."
+            "message": "Không tìm thấy món ăn nào phù hợp với nguyên liệu"
         }
     
     suggest_dish = df.iloc[best_match_idx]
