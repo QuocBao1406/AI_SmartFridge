@@ -6,6 +6,9 @@ from firebase_admin import credentials, firestore
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
+# ==========================================
+# 1. KHỞI TẠO APP VÀ KẾT NỐI FIREBASE
+# ==========================================
 app = FastAPI()
 
 print("1. Đang khởi động Server API...")
@@ -15,15 +18,15 @@ try:
         firebase_admin.initialize_app(cred)
     db = firestore.client()
 except Exception as e:
-    print(f"Lỗi kết nối Firebase: {e}")
+    print(f"❌ Lỗi kết nối Firebase: {e}")
 
-# Các biến toàn cục cho AI
+# Các biến toàn cục lưu trữ bộ não AI
 df = None
 vectorizer = None
 tfidf_matrix = None
 
 # ==========================================
-# 2. HÀM TẢI DỮ LIỆU & HUẤN LUYỆN AI
+# 2. HUẤN LUYỆN AI TỪ DỮ LIỆU FIREBASE
 # ==========================================
 def load_and_train_ai():
     global df, vectorizer, tfidf_matrix
@@ -36,101 +39,106 @@ def load_and_train_ai():
         recipes_list.append(doc.to_dict())
         
     if not recipes_list:
-        print("Cảnh báo: Không có công thức nào trên Firebase!")
+        print("⚠️ Cảnh báo: Không có công thức nào trên Firebase!")
         return
 
     print(f"-> Đã tải xong {len(recipes_list)} công thức nấu ăn!")
-    
-    # Đưa vào Pandas DataFrame
     df = pd.DataFrame(recipes_list)
     
     print("3. Đang huấn luyện AI...")
-    # Huấn luyện mô hình TF-IDF dựa trên cột 'ingredients'
+    # AI học dựa trên cột 'ingredients' đã được bro dọn sạch gia vị
     vectorizer = TfidfVectorizer()
     tfidf_matrix = vectorizer.fit_transform(df['ingredients'])
     
     print("-> AI đã sẵn sàng nhận yêu cầu!")
 
-# Chạy hàm huấn luyện ngay khi khởi động Server
+# Chạy huấn luyện ngay khi bật server
 load_and_train_ai()
 
 # ==========================================
-# 3. ĐỊNH NGHĨA DỮ LIỆU ĐẦU VÀO TỪ ANDROID
+# 3. MODEL DỮ LIỆU
 # ==========================================
 class RecipeRequest(BaseModel):
     ingredients: list[str]
 
 # ==========================================
-# 4. API KẾT NỐI (ENDPOINTS)
+# 4. CÁC API ENDPOINTS
 # ==========================================
 
-# API Ping dùng cho Cron-job (Giữ Server thức 24/7)
+# API Ping giữ mạng cho Render
 @app.get("/api/ping")
 def ping():
     return {"status": "AI Server is awake!"}
 
-# API Chính: Nhận nguyên liệu và trả về Món ăn
+# API Gợi ý món ăn (Trả về DANH SÁCH)
 @app.post("/api/suggest-recipe")
 def suggest_recipe(request: RecipeRequest):
     global df, vectorizer, tfidf_matrix
     
     if df is None or df.empty:
-        return {"success": False, "message": "Hệ thống AI chưa sẵn sàng hoặc không có dữ liệu."}
+        return {"success": False, "message": "Dữ liệu AI chưa sẵn sàng."}
 
     if not request.ingredients:
-        return {"success": False, "message": "Bạn chưa cung cấp nguyên liệu nào!"}
+        return {"success": False, "message": "Tủ lạnh trống, không có gì để gợi ý!"}
 
-    # Gom đồ ăn user gửi lên thành 1 chuỗi để AI quét TF-IDF
+    # Chuẩn hóa đầu vào từ Android
     user_foods = [food.lower().strip() for food in request.ingredients]
     user_text = " ".join(user_foods)
     
-    # AI bắt đầu tính điểm khớp (Cosine Similarity)
+    # Tính toán độ tương đồng
     user_vector = vectorizer.transform([user_text])
     similarities = cosine_similarity(user_vector, tfidf_matrix).flatten()
     
-    best_match_idx = similarities.argmax()
-    best_score = similarities[best_match_idx]
+    # Sắp xếp để lấy những món có điểm cao nhất (giảm dần)
+    top_indices = similarities.argsort()[::-1]
+    
+    suggested_recipes = []
+    
+    for idx in top_indices:
+        score = similarities[idx]
+        
+        # Nếu món ăn quá không liên quan (điểm < 0.1) thì bỏ qua các món sau luôn
+        if score < 0.1:
+            break
+            
+        dish = df.iloc[idx]
+        
+        # --- THUẬT TOÁN KIỂM TRA ĐỘ BAO PHỦ (COVERAGE) ---
+        # Lấy list nguyên liệu chính của món ăn này
+        recipe_main_ingredients = [item.lower().strip() for item in dish['ingredients'].split(',')]
+        
+        # Đếm số món trong tủ khớp với công thức
+        matched_count = 0
+        for r_food in recipe_main_ingredients:
+            if any(u_food in r_food or r_food in u_food for u_food in user_foods):
+                matched_count += 1
+        
+        # Tính tỷ lệ (Ví dụ: có 2/3 nguyên liệu chính = 66% -> ĐẠT)
+        total_needed = len(recipe_main_ingredients)
+        coverage_ratio = matched_count / total_needed if total_needed > 0 else 0
+        
+        # CHỈ CHỌN: Nếu người dùng có ít nhất 50% nguyên liệu chính của món đó
+        if coverage_ratio >= 0.5:
+            suggested_recipes.append({
+                "recipe_name": dish['name'],
+                "ingredients": dish['ingredients'],
+                "instructions": dish['instructions']
+            })
+            
+        # Dừng lại khi đã tìm đủ 4 món ngon nhất
+        if len(suggested_recipes) >= 4:
+            break
 
-    # Nâng điểm sàn: Ít nhất phải khớp 15% từ khóa
-    if best_score < 0.15:
+    # Trả kết quả về cho Android
+    if not suggested_recipes:
         return {
             "success": False, 
-            "message": "Không tìm thấy món nào đủ độ phù hợp với các nguyên liệu này."
+            "message": "Không tìm thấy món nào đủ nguyên liệu chính. Bạn cần đi chợ thêm rồi!"
         }
 
-    # Lấy thông tin món ăn được AI chấm điểm cao nhất
-    suggested_dish = df.iloc[best_match_idx]
-    
-    # ==========================================
-    # ĐOẠN LOGIC CHẶN CỬA V3: TỈ LỆ BAO PHỦ 50%
-    # ==========================================
-    # Lấy nguyên liệu chính của món ăn (đã được dọn sạch gia vị trên Firebase)
-    main_ingredients = [item.lower().strip() for item in suggested_dish['ingredients'].split(',')]
-            
-    # Đếm xem tủ lạnh user có bao nhiêu món khớp với nguyên liệu chính
-    matched_count = 0
-    for recipe_food in main_ingredients:
-        if any(u_food in recipe_food or recipe_food in u_food for u_food in user_foods):
-            matched_count += 1
-            
-    # Tính tỉ lệ
-    total_main = len(main_ingredients)
-    coverage_ratio = matched_count / total_main if total_main > 0 else 0
-    
-    # Nếu đồ trong tủ đáp ứng < 50% nguyên liệu chính -> Báo thiếu đồ
-    if coverage_ratio < 0.5:
-        return {
-            "success": False, 
-            "message": f"Món phù hợp nhất là '{suggested_dish['name']}', nhưng bạn chỉ có {matched_count}/{total_main} nguyên liệu chính. Không đủ đồ để nấu rồi, hãy đi chợ thêm nhé!"
-        }
-    # ==========================================
-
-    # Nếu qua được vòng kiểm duyệt, trả kết quả về cho Android
     return {
         "success": True,
-        "recipe_name": suggested_dish['name'],
-        "ingredients": suggested_dish['ingredients'],
-        "instructions": suggested_dish['instructions']
+        "data": suggested_recipes # Trả về mảng các Object món ăn
     }
 
 @app.get("/api/ping")
