@@ -1,115 +1,136 @@
-import firebase_admin
-from firebase_admin import credentials, firestore
+import pandas as pd
 from fastapi import FastAPI
 from pydantic import BaseModel
-from typing import List
-import pandas as pd
+import firebase_admin
+from firebase_admin import credentials, firestore
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-SPICES = [
-    "nước mắm", "dầu ăn", "muối", "đường", "tiêu", "bột ngọt", "mì chính",
-    "hạt nêm", "tỏi", "hành khô", "gừng", "nước tương", "xì dầu", "giấm", "ớt", "chanh"
-]
-
-def clean_for_ai(ingredients_data):
-    if isinstance(ingredients_data, (list, tuple)):
-        text = ", ".join(ingredients_data).lower()
-    else:
-        text = str(ingredients_data).lower()
-    for spice in SPICES:
-        text = text.replace(spice, "")
-    text = text.replace(",", " ").replace(" ", " ").strip()
-    return text
+app = FastAPI()
 
 print("1. Đang khởi động Server API...")
-print("2. Đang kết nối Firebase và tải công thức...")
-cred = credentials.Certificate("serviceAccountKey.json")
-if not firebase_admin._apps:
-    firebase_admin.initialize_app(cred)
+try:
+    cred = credentials.Certificate("serviceAccountKey.json")
+    if not firebase_admin._apps:
+        firebase_admin.initialize_app(cred)
+    db = firestore.client()
+except Exception as e:
+    print(f"Lỗi kết nối Firebase: {e}")
 
-db = firestore.client()
-docs = db.collection("recipes").stream()
+# Các biến toàn cục cho AI
+df = None
+vectorizer = None
+tfidf_matrix = None
 
-recipe_list = []
-for doc in docs:
-    data = doc.to_dict()
-    recipe_list.append({
-        'id': doc.id,
-        'name': data.get('name', ''),
-        'ingredients': data.get('ingredients', ''),
-        'instructions': data.get('instructions', '')
-    })
+# ==========================================
+# 2. HÀM TẢI DỮ LIỆU & HUẤN LUYỆN AI
+# ==========================================
+def load_and_train_ai():
+    global df, vectorizer, tfidf_matrix
+    print("2. Đang kết nối Firebase và tải công thức...")
+    
+    recipes_ref = db.collection("recipes").get()
+    recipes_list = []
+    
+    for doc in recipes_ref:
+        recipes_list.append(doc.to_dict())
+        
+    if not recipes_list:
+        print("Cảnh báo: Không có công thức nào trên Firebase!")
+        return
 
-df = pd.DataFrame(recipe_list)
-print(f"-> Đã tải xong {len(df)} công thức nấu ăn!")
+    print(f"-> Đã tải xong {len(recipes_list)} công thức nấu ăn!")
+    
+    # Đưa vào Pandas DataFrame
+    df = pd.DataFrame(recipes_list)
+    
+    print("3. Đang huấn luyện AI...")
+    # Huấn luyện mô hình TF-IDF dựa trên cột 'ingredients'
+    vectorizer = TfidfVectorizer()
+    tfidf_matrix = vectorizer.fit_transform(df['ingredients'])
+    
+    print("-> AI đã sẵn sàng nhận yêu cầu!")
 
-print("3. Đang huấn luyện AI...")
+# Chạy hàm huấn luyện ngay khi khởi động Server
+load_and_train_ai()
 
-df['ai_text'] = df['ingredients'].apply(clean_for_ai)
-
-vectorizer = TfidfVectorizer()
-tfidf_matrix = vectorizer.fit_transform(df['ai_text'])
-
-print("-> AI đã sẵn sàng nhận yêu cầu!")
-
-app = FastAPI(title = "Smart Fridge AI API")
-
+# ==========================================
+# 3. ĐỊNH NGHĨA DỮ LIỆU ĐẦU VÀO TỪ ANDROID
+# ==========================================
 class RecipeRequest(BaseModel):
-    ingredients: List[str]
+    ingredients: list[str]
 
+# ==========================================
+# 4. API KẾT NỐI (ENDPOINTS)
+# ==========================================
+
+# API Ping dùng cho Cron-job (Giữ Server thức 24/7)
+@app.get("/api/ping")
+def ping():
+    return {"status": "AI Server is awake!"}
+
+# API Chính: Nhận nguyên liệu và trả về Món ăn
 @app.post("/api/suggest-recipe")
 def suggest_recipe(request: RecipeRequest):
-    if df.empty:
-        return {"success": False, "message": "Database trống!"}
+    global df, vectorizer, tfidf_matrix
     
-    input_str = ", ".join(request.ingredients)
-    clean_input = clean_for_ai(input_str)
+    if df is None or df.empty:
+        return {"success": False, "message": "Hệ thống AI chưa sẵn sàng hoặc không có dữ liệu."}
 
-    input_vector = vectorizer.transform([clean_input])
-    similarity_scores = cosine_similarity(input_vector, tfidf_matrix)
+    if not request.ingredients:
+        return {"success": False, "message": "Bạn chưa cung cấp nguyên liệu nào!"}
 
-    best_match_idx = similarity_scores[0].argmax()
-    best_score = similarity_scores[0][best_match_idx]
-
-    suggest_dish = df.iloc[best_match_idx]
-
+    # Gom đồ ăn user gửi lên thành 1 chuỗi để AI quét TF-IDF
     user_foods = [food.lower().strip() for food in request.ingredients]
+    user_text = " ".join(user_foods)
     
-    original_ingredients = suggest_dish['ingredients'].split(',')
+    # AI bắt đầu tính điểm khớp (Cosine Similarity)
+    user_vector = vectorizer.transform([user_text])
+    similarities = cosine_similarity(user_vector, tfidf_matrix).flatten()
     
-    # 3. Lọc ra danh sách "Nguyên liệu chính" (Bỏ qua mắm, muối, hành, tỏi...)
-    main_ingredients = []
-    for item in original_ingredients:
-        item_clean = item.lower().strip()
-        # Nếu món này không chứa từ nào trong Blacklist -> Nó là nguyên liệu chính
-        if not any(spice in item_clean for spice in SPICES):
-            main_ingredients.append(item_clean)
+    best_match_idx = similarities.argmax()
+    best_score = similarities[best_match_idx]
+
+    # Nâng điểm sàn: Ít nhất phải khớp 15% từ khóa
+    if best_score < 0.15:
+        return {
+            "success": False, 
+            "message": "Không tìm thấy món nào đủ độ phù hợp với các nguyên liệu này."
+        }
+
+    # Lấy thông tin món ăn được AI chấm điểm cao nhất
+    suggested_dish = df.iloc[best_match_idx]
+    
+    # ==========================================
+    # ĐOẠN LOGIC CHẶN CỬA V3: TỈ LỆ BAO PHỦ 50%
+    # ==========================================
+    # Lấy nguyên liệu chính của món ăn (đã được dọn sạch gia vị trên Firebase)
+    main_ingredients = [item.lower().strip() for item in suggested_dish['ingredients'].split(',')]
             
-    # 4. Đếm số lượng nguyên liệu chính mà user ĐANG CÓ trong tủ
+    # Đếm xem tủ lạnh user có bao nhiêu món khớp với nguyên liệu chính
     matched_count = 0
     for recipe_food in main_ingredients:
-        # Nếu đồ trong tủ khớp với đồ của công thức (VD: "chuối" khớp "chuối xanh")
         if any(u_food in recipe_food or recipe_food in u_food for u_food in user_foods):
             matched_count += 1
             
-    # 5. Tính Tỉ lệ (Ví dụ: Có 1 món trên tổng số 4 nguyên liệu chính -> 25%)
+    # Tính tỉ lệ
     total_main = len(main_ingredients)
     coverage_ratio = matched_count / total_main if total_main > 0 else 0
     
-    # 6. PHÁN QUYẾT: Nếu có ít hơn 50% nguyên liệu chính -> Chặn!
+    # Nếu đồ trong tủ đáp ứng < 50% nguyên liệu chính -> Báo thiếu đồ
     if coverage_ratio < 0.5:
         return {
             "success": False, 
-            "message": f"Món phù hợp nhất là '{suggest_dish['name']}', nhưng bạn chỉ có {matched_count}/{total_main} nguyên liệu chính. Không đủ đồ để nấu rồi, hãy đi chợ thêm nhé!"
+            "message": f"Món phù hợp nhất là '{suggested_dish['name']}', nhưng bạn chỉ có {matched_count}/{total_main} nguyên liệu chính. Không đủ đồ để nấu rồi, hãy đi chợ thêm nhé!"
         }
-    
+    # ==========================================
+
+    # Nếu qua được vòng kiểm duyệt, trả kết quả về cho Android
     return {
         "success": True,
-        "match_score": round(best_score * 100, 2),
-        "recipe_name": suggest_dish['name'],
-        "ingredients": suggest_dish['ingredients'],
-        "instructions": suggest_dish['instructions']
+        "recipe_name": suggested_dish['name'],
+        "ingredients": suggested_dish['ingredients'],
+        "instructions": suggested_dish['instructions']
     }
 
 @app.get("/api/ping")
