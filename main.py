@@ -101,7 +101,7 @@ def suggest_recipe(request: RecipeRequest):
     if coverage_ratio < 0.5:
         return {
             "success": False, 
-            "message": f"Món phù hợp nhất là '{suggested_dish['name']}', nhưng bạn chỉ có {matched_count}/{total_main} nguyên liệu chính. Không đủ đồ để nấu rồi, hãy đi chợ thêm nhé!"
+            "message": f"Món phù hợp nhất là '{suggest_dish['name']}', nhưng bạn chỉ có {matched_count}/{total_main} nguyên liệu chính. Không đủ đồ để nấu rồi, hãy đi chợ thêm nhé!"
         }
     
     return {
