@@ -9,7 +9,8 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 SPICES = [
     "nước mắm", "dầu ăn", "muối", "đường", "tiêu", "bột ngọt", "mì chính",
-    "hạt nêm", "tỏi", "hành khô", "gừng", "nước tương", "xì dầu", "giấm", "ớt", "chanh"
+    "hạt nêm", "tỏi", "hành khô", "hành tím", "hành lá", "hành tây", "gừng", 
+    "nước tương", "xì dầu", "giấm", "ớt", "chanh", "ngò", "rau mùi", "hành"
 ]
 
 def clean_for_ai(ingredients_data):
@@ -72,7 +73,7 @@ def suggest_recipe(request: RecipeRequest):
     best_match_idx = similarity_scores[0].argmax()
     best_score = similarity_scores[0][best_match_idx]
 
-    if best_score < 0.05:
+    if best_score < 0.3:
         return {
             "success": False,
             "message": "Không tìm thấy món ăn nào phù hợp với nguyên liệu"
