@@ -74,16 +74,34 @@ def suggest_recipe(request: RecipeRequest):
 
     suggest_dish = df.iloc[best_match_idx]
 
-    input_foods = clean_input.split()
-
-    recipe_ingredients = clean_for_ai(suggest_dish['ingredients'])
-
-    has_main_ingredient = any(food in recipe_ingredients for food in input_foods if len(food) > 1)
-
-    if not has_main_ingredient:
+    user_foods = [food.lower().strip() for food in request.ingredients]
+    
+    original_ingredients = suggest_dish['ingredients'].split(',')
+    
+    # 3. Lọc ra danh sách "Nguyên liệu chính" (Bỏ qua mắm, muối, hành, tỏi...)
+    main_ingredients = []
+    for item in original_ingredients:
+        item_clean = item.lower().strip()
+        # Nếu món này không chứa từ nào trong Blacklist -> Nó là nguyên liệu chính
+        if not any(spice in item_clean for spice in SPICES):
+            main_ingredients.append(item_clean)
+            
+    # 4. Đếm số lượng nguyên liệu chính mà user ĐANG CÓ trong tủ
+    matched_count = 0
+    for recipe_food in main_ingredients:
+        # Nếu đồ trong tủ khớp với đồ của công thức (VD: "chuối" khớp "chuối xanh")
+        if any(u_food in recipe_food or recipe_food in u_food for u_food in user_foods):
+            matched_count += 1
+            
+    # 5. Tính Tỉ lệ (Ví dụ: Có 1 món trên tổng số 4 nguyên liệu chính -> 25%)
+    total_main = len(main_ingredients)
+    coverage_ratio = matched_count / total_main if total_main > 0 else 0
+    
+    # 6. PHÁN QUYẾT: Nếu có ít hơn 50% nguyên liệu chính -> Chặn!
+    if coverage_ratio < 0.5:
         return {
             "success": False, 
-            "message": "Tủ lạnh hiện tại không có đủ nguyên liệu cho các món trong thực đơn."
+            "message": f"Món phù hợp nhất là '{suggested_dish['name']}', nhưng bạn chỉ có {matched_count}/{total_main} nguyên liệu chính. Không đủ đồ để nấu rồi, hãy đi chợ thêm nhé!"
         }
     
     return {
