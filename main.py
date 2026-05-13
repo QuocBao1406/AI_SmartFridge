@@ -73,10 +73,17 @@ def suggest_recipe(request: RecipeRequest):
     best_match_idx = similarity_scores[0].argmax()
     best_score = similarity_scores[0][best_match_idx]
 
-    if best_score < 0.3:
+    input_foods = clean_input.split()
+
+    recipe_ingredients = clean_for_ai(suggest_dish['ingredients'])
+
+    has_main_ingredient = any(food in recipe_ingredients for food in input_foods if len(food) > 1)
+
+    
+    if not has_main_ingredient:
         return {
             "success": False,
-            "message": "Không tìm thấy món ăn nào phù hợp với nguyên liệu"
+            "message": "Tủ lạnh hiện tại không có đủ nguyên liệu chính cho các món trong thực đơn."
         }
     
     suggest_dish = df.iloc[best_match_idx]
